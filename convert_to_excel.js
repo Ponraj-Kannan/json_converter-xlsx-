@@ -68,24 +68,24 @@ let overallHeaders = null;   // column headers from the first match processed
 jsonFiles.forEach(file => {
   const filePath = path.join(dirPath, file);
   const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  
+
   if (!data || data.length === 0) {
     console.warn(`⚠️ Warning: ${file} is empty, skipping.`);
     return;
   }
-  
+
   const headers = Object.keys(data[0]);
   const sheetName = path.basename(file, '.json');
-  
+
   // Add worksheet
   const ws = wb.addWorksheet(sheetName);
-  
+
   // Set column widths
   ws.columns = headers.map((header, i) => ({
     key: header,
     width: i === 0 ? 6 : 15
   }));
-  
+
   // Add header row
   const headerRow = ws.addRow(headers);
   headerRow.eachCell(cell => {
@@ -94,19 +94,19 @@ jsonFiles.forEach(file => {
     cell.border = border;
   });
   headerRow.height = 40;
-  
+
   // Add data rows
   data.forEach(record => {
     const rowValues = headers.map(h => {
       const val = record[h];
-      
+
       // Convert numeric strings to actual numbers to avoid Excel "number stored as text" warnings
       if (typeof val === 'string' && val.trim() !== '' && !isNaN(val)) {
         return Number(val);
       }
       return val;
     });
-    
+
     const row = ws.addRow(rowValues);
     row.eachCell({ includeEmpty: true }, cell => {
       cell.alignment = centerAlign;
@@ -114,11 +114,11 @@ jsonFiles.forEach(file => {
     });
     row.height = 25;
   });
-  
+
   // ── Per-Set Final Play Summary ────────────────────────────────────────────
   // Determine the set key (column header named 'Set')
   const setKey = headers.find(h => h.toLowerCase() === 'set') || 'Set';
-  
+
   // Collect the last record for each set (preserving set order)
   const setOrderMap = new Map(); // setName → last record seen
   data.forEach(record => {
@@ -127,7 +127,7 @@ jsonFiles.forEach(file => {
       setOrderMap.set(setName, record); // overwrites with each later record → ends up as the last one
     }
   });
-  
+
   // Convert to sorted array based on first-appearance order
   const setOrder = [];
   data.forEach(record => {
@@ -136,17 +136,17 @@ jsonFiles.forEach(file => {
       setOrder.push(setName);
     }
   });
-  
+
   const lastPlayPerSet = setOrder.map(setName => setOrderMap.get(setName));
-  
+
   // Capture headers from first match; collect rows for Overall Data sheet
   if (!overallHeaders) overallHeaders = headers;
   overallDataRows.push({ sheetName, headers, lastPlayPerSet });
-  
+
   // Leave 3 blank rows after the last data row, then write the section
   const lastDataRowIdx = data.length + 1; // 1-based Excel row of last data row
   const setHeaderRowIdx = lastDataRowIdx + 3; // 3 blank rows gap
-  
+
   // Section header label (merged-style: write only in first cell, style all)
   const setHeaderRow = ws.getRow(setHeaderRowIdx);
   const setHeaderCell = ws.getCell(`A${setHeaderRowIdx}`);
@@ -159,7 +159,7 @@ jsonFiles.forEach(file => {
     fgColor: { argb: 'FF404040' } // dark grey background for section header
   };
   setHeaderCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-  
+
   // Style the remaining cells in the header label row to match
   for (let col = 2; col <= headers.length; col++) {
     const cell = ws.getCell(setHeaderRowIdx, col);
@@ -172,14 +172,14 @@ jsonFiles.forEach(file => {
   }
   setHeaderCell.border = border;
   setHeaderRow.height = 28;
-  
+
   // Write the column-header row for the set summary (same as main headers)
   const setColHeaderRowIdx = setHeaderRowIdx + 1;
   const setColHeaderRow = ws.addRow(headers); // addRow always appends, use getRow/getCell for precise placement
   // Since addRow appends at current last row, we need to insert at exact position.
   // Re-approach: use ws.getRow() for all set-summary rows.
   ws.spliceRows(setColHeaderRowIdx, 0); // ensure row exists without data
-  
+
   const setColHeaderExcelRow = ws.getRow(setColHeaderRowIdx);
   headers.forEach((h, i) => {
     const cell = setColHeaderExcelRow.getCell(i + 1);
@@ -194,14 +194,14 @@ jsonFiles.forEach(file => {
     };
   });
   setColHeaderExcelRow.height = 30;
-  
+
   // Write each set's last-play row highlighted with #FFC000
   const SET_SUMMARY_COLOR = 'FFFFC000'; // #FFC000 in ARGB
-  
+
   lastPlayPerSet.forEach((record, idx) => {
     const rowIdx = setColHeaderRowIdx + 1 + idx;
     const excelRow = ws.getRow(rowIdx);
-    
+
     headers.forEach((h, colIdx) => {
       const cell = excelRow.getCell(colIdx + 1);
       const val = record[h];
@@ -218,22 +218,22 @@ jsonFiles.forEach(file => {
     });
     excelRow.height = 25;
   });
-  
+
   // ── 10-6 Trigger Detection & Row Highlighting ─────────────────────────────
   // Colors reused from the rest of the sheet
   const GREEN_HL = 'FFA8F4D0';  // success green (mint)
-  const RED_HL   = 'FFF6A6B1';  // fail red (pink)
+  const RED_HL = 'FFF6A6B1';  // fail red (pink)
   // Excel column numbers for F (P1 Pts) and G (P2 Pts) — 1-based
   const COL_F = 6;
   const COL_G = 7;
 
   const triggeredSets = new Set(); // prevent double-triggering the same set
-  let anyTriggerFail    = false;
+  let anyTriggerFail = false;
   let anyTriggerSuccess = false;
 
   let di = 0;
   while (di < data.length) {
-    const rec   = data[di];
+    const rec = data[di];
     const p1Pts = Number(rec[headers[5]]) || 0;
     const p2Pts = Number(rec[headers[6]]) || 0;
     const curSet = rec[setKey];
@@ -241,7 +241,7 @@ jsonFiles.forEach(file => {
     // Only trigger once per set on the exact score 10-6 or 6-10
     const isTrigger =
       (p1Pts === 10 && p2Pts === 6) ||
-      (p1Pts === 6  && p2Pts === 10);
+      (p1Pts === 6 && p2Pts === 10);
 
     if (isTrigger && !triggeredSets.has(curSet)) {
       triggeredSets.add(curSet);
@@ -269,8 +269,8 @@ jsonFiles.forEach(file => {
           // diff < 2 → still contested, keep scanning
         } else {
           // ── Normal play: first player to reach 11 wins ────────────────────
-          if (triggerPlayer === 1 && np1 >= 11) { outcomeSuccess = true;  break; }
-          if (triggerPlayer === 2 && np2 >= 11) { outcomeSuccess = true;  break; }
+          if (triggerPlayer === 1 && np1 >= 11) { outcomeSuccess = true; break; }
+          if (triggerPlayer === 2 && np2 >= 11) { outcomeSuccess = true; break; }
           // Opponent wins without deuce
           if (triggerPlayer === 1 && np2 >= 11) { outcomeSuccess = false; break; }
           if (triggerPlayer === 2 && np1 >= 11) { outcomeSuccess = false; break; }
@@ -278,7 +278,7 @@ jsonFiles.forEach(file => {
       }
 
       if (outcomeSuccess) anyTriggerSuccess = true;
-      else               anyTriggerFail    = true;
+      else anyTriggerFail = true;
 
       const hlColor = outcomeSuccess ? GREEN_HL : RED_HL;
 
@@ -302,20 +302,19 @@ jsonFiles.forEach(file => {
   const statusResult = anyTriggerFail
     ? 'Fail'
     : (anyTriggerSuccess ? 'Success' : 'N/A');
-  const statusColor  = anyTriggerFail
+  const statusColor = anyTriggerFail
     ? 'FFF6A6B1'
     : (anyTriggerSuccess ? 'FFA8F4D0' : 'FFDEDEDE');
 
   // ── MAX Sets + Status summary cells ───────────────────────────────────────
   const lastDataRow = data.length + 1;
-  const computedSetHeaderRowIdx    = lastDataRow + 3;
+  const computedSetHeaderRowIdx = lastDataRow + 3;
   const computedSetColHeaderRowIdx = computedSetHeaderRowIdx + 1;
   const summaryRow = computedSetColHeaderRowIdx + lastPlayPerSet.length + 2;
 
   const cellD = ws.getCell(`D${summaryRow}`);
   const cellE = ws.getCell(`E${summaryRow}`);
   const cellK = ws.getCell(`K${summaryRow}`);
-
   const maxD = Math.max(...data.map(row => Number(row[headers[3]]) || 0));
   const maxE = Math.max(...data.map(row => Number(row[headers[4]]) || 0));
 
@@ -325,14 +324,14 @@ jsonFiles.forEach(file => {
 
   [cellD, cellE, cellK].forEach(cell => {
     cell.alignment = centerAlign;
-    cell.border    = border;
-    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusColor } };
+    cell.border = border;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusColor } };
   });
 
   ws.getRow(summaryRow).height = 25;
-  
+
   console.log(`  📄 Added sheet: "${sheetName}" with ${data.length} rows and ${lastPlayPerSet.length} set(s) in summary`);
-  
+
   // Collect details for the Summary sheet
   summaryRowsData.push({
     sheetName,
@@ -465,11 +464,11 @@ summaryRowsData.forEach(item => {
     { formula: item.maxEFormula, result: item.maxEResult },
     { formula: item.statusFormula, result: item.statusResult }
   ]);
-  
+
   row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
     cell.alignment = centerAlign;
     cell.border = border;
-    
+
     // Highlight Max Player 1 Sets, Max Player 2 Sets, and Status using same color as sheet
     if (colNumber >= 4) {
       cell.fill = {
