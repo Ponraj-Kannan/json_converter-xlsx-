@@ -44,6 +44,9 @@ const wb = new ExcelJS.Workbook();
 // Create Summary sheet as the first sheet
 const summaryWs = wb.addWorksheet('Summary');
 
+// Create Overall Data sheet as the second sheet (populated after all match processing)
+const overallWs = wb.addWorksheet('Overall Data');
+
 // Common borders and alignment
 const border = {
   top: { style: 'thin', color: { argb: 'FF000000' } },
@@ -56,6 +59,10 @@ const centerAlign = { horizontal: 'center', vertical: 'middle' };
 const headerAlign = { horizontal: 'center', vertical: 'middle', wrapText: true };
 
 const summaryRowsData = [];
+
+// Collector for the Overall Data sheet
+const overallDataRows = [];  // [{ sheetName, headers, lastPlayPerSet }]
+let overallHeaders = null;   // column headers from the first match processed
 
 // Process each match*.json file one by one
 jsonFiles.forEach(file => {
@@ -108,45 +115,223 @@ jsonFiles.forEach(file => {
     row.height = 25;
   });
   
-  // Add summary cells (2 rows after the last data row)
-  const lastDataRow = data.length + 1;
-  const summaryRow = lastDataRow + 2;
+  // ── Per-Set Final Play Summary ────────────────────────────────────────────
+  // Determine the set key (column header named 'Set')
+  const setKey = headers.find(h => h.toLowerCase() === 'set') || 'Set';
   
-  const cellD = ws.getCell(`D${summaryRow}`);
-  const cellE = ws.getCell(`E${summaryRow}`);
-  const cellK = ws.getCell(`K${summaryRow}`);
+  // Collect the last record for each set (preserving set order)
+  const setOrderMap = new Map(); // setName → last record seen
+  data.forEach(record => {
+    const setName = record[setKey];
+    if (setName) {
+      setOrderMap.set(setName, record); // overwrites with each later record → ends up as the last one
+    }
+  });
   
-  // Evaluate Success / Fails color programmatically
-  const lastDataRecord = data[data.length - 1];
-  const valJ = Number(lastDataRecord[headers[9]]) || 0;
-  const valK = Number(lastDataRecord[headers[10]]) || 0;
+  // Convert to sorted array based on first-appearance order
+  const setOrder = [];
+  data.forEach(record => {
+    const setName = record[setKey];
+    if (setName && !setOrder.includes(setName)) {
+      setOrder.push(setName);
+    }
+  });
   
-  const maxD = Math.max(...data.map(row => Number(row[headers[3]]) || 0));
-  const maxE = Math.max(...data.map(row => Number(row[headers[4]]) || 0));
+  const lastPlayPerSet = setOrder.map(setName => setOrderMap.get(setName));
   
-  const isSuccess = valJ >= valK ? (maxD > 0) : (maxE > 0);
-  const statusResult = isSuccess ? 'Success' : 'Fails';
-  const statusColor = isSuccess ? 'FFA8F4D0' : 'FFF6A6B1';
+  // Capture headers from first match; collect rows for Overall Data sheet
+  if (!overallHeaders) overallHeaders = headers;
+  overallDataRows.push({ sheetName, headers, lastPlayPerSet });
   
-  cellD.value = { formula: `MAX(D2:D${lastDataRow})`, result: maxD };
-  cellE.value = { formula: `MAX(E2:E${lastDataRow})`, result: maxE };
-  cellK.value = { formula: `IF(J${lastDataRow}>=K${lastDataRow}, IF(D${summaryRow}>0, "Success", "Fails"), IF(E${summaryRow}>0, "Success", "Fails"))`, result: statusResult };
+  // Leave 3 blank rows after the last data row, then write the section
+  const lastDataRowIdx = data.length + 1; // 1-based Excel row of last data row
+  const setHeaderRowIdx = lastDataRowIdx + 3; // 3 blank rows gap
   
-  // Style summary cells (center alignment, border, and conditional background color)
-  const summaryCells = [cellD, cellE, cellK];
-  summaryCells.forEach(cell => {
-    cell.alignment = centerAlign;
+  // Section header label (merged-style: write only in first cell, style all)
+  const setHeaderRow = ws.getRow(setHeaderRowIdx);
+  const setHeaderCell = ws.getCell(`A${setHeaderRowIdx}`);
+  setHeaderCell.value = 'Final Play of Each Set';
+  setHeaderCell.font = { bold: true, size: 12 };
+  setHeaderCell.alignment = centerAlign;
+  setHeaderCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF404040' } // dark grey background for section header
+  };
+  setHeaderCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+  
+  // Style the remaining cells in the header label row to match
+  for (let col = 2; col <= headers.length; col++) {
+    const cell = ws.getCell(setHeaderRowIdx, col);
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF404040' }
+    };
+    cell.border = border;
+  }
+  setHeaderCell.border = border;
+  setHeaderRow.height = 28;
+  
+  // Write the column-header row for the set summary (same as main headers)
+  const setColHeaderRowIdx = setHeaderRowIdx + 1;
+  const setColHeaderRow = ws.addRow(headers); // addRow always appends, use getRow/getCell for precise placement
+  // Since addRow appends at current last row, we need to insert at exact position.
+  // Re-approach: use ws.getRow() for all set-summary rows.
+  ws.spliceRows(setColHeaderRowIdx, 0); // ensure row exists without data
+  
+  const setColHeaderExcelRow = ws.getRow(setColHeaderRowIdx);
+  headers.forEach((h, i) => {
+    const cell = setColHeaderExcelRow.getCell(i + 1);
+    cell.value = h;
+    cell.font = { bold: true };
+    cell.alignment = headerAlign;
     cell.border = border;
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: statusColor }
+      fgColor: { argb: 'FFD9D9D9' } // light grey for sub-header
     };
   });
+  setColHeaderExcelRow.height = 30;
   
+  // Write each set's last-play row highlighted with #FFC000
+  const SET_SUMMARY_COLOR = 'FFFFC000'; // #FFC000 in ARGB
+  
+  lastPlayPerSet.forEach((record, idx) => {
+    const rowIdx = setColHeaderRowIdx + 1 + idx;
+    const excelRow = ws.getRow(rowIdx);
+    
+    headers.forEach((h, colIdx) => {
+      const cell = excelRow.getCell(colIdx + 1);
+      const val = record[h];
+      cell.value = (typeof val === 'string' && val.trim() !== '' && !isNaN(val))
+        ? Number(val)
+        : val;
+      cell.alignment = centerAlign;
+      cell.border = border;
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: SET_SUMMARY_COLOR }
+      };
+    });
+    excelRow.height = 25;
+  });
+  
+  // ── 10-6 Trigger Detection & Row Highlighting ─────────────────────────────
+  // Colors reused from the rest of the sheet
+  const GREEN_HL = 'FFA8F4D0';  // success green (mint)
+  const RED_HL   = 'FFF6A6B1';  // fail red (pink)
+  // Excel column numbers for F (P1 Pts) and G (P2 Pts) — 1-based
+  const COL_F = 6;
+  const COL_G = 7;
+
+  const triggeredSets = new Set(); // prevent double-triggering the same set
+  let anyTriggerFail    = false;
+  let anyTriggerSuccess = false;
+
+  let di = 0;
+  while (di < data.length) {
+    const rec   = data[di];
+    const p1Pts = Number(rec[headers[5]]) || 0;
+    const p2Pts = Number(rec[headers[6]]) || 0;
+    const curSet = rec[setKey];
+
+    // Only trigger once per set on the exact score 10-6 or 6-10
+    const isTrigger =
+      (p1Pts === 10 && p2Pts === 6) ||
+      (p1Pts === 6  && p2Pts === 10);
+
+    if (isTrigger && !triggeredSets.has(curSet)) {
+      triggeredSets.add(curSet);
+      const triggerPlayer = p1Pts === 10 ? 1 : 2; // which player reached 10
+
+      // Scan forward within the same set to determine outcome
+      let outcomeSuccess = false;
+      let hlEnd = di; // last data-index to highlight (inclusive)
+
+      for (let j = di + 1; j < data.length; j++) {
+        if (data[j][setKey] !== curSet) break; // set changed — stop
+        hlEnd = j;
+        const np1 = Number(data[j][headers[5]]) || 0;
+        const np2 = Number(data[j][headers[6]]) || 0;
+
+        if (np1 >= 10 && np2 >= 10) {
+          // ── Deuce territory: both players at 10+ ──────────────────────────
+          // Winner must have a 2-point lead
+          const diff = Math.abs(np1 - np2);
+          if (diff >= 2) {
+            // Determine winner: the player ahead by 2
+            outcomeSuccess = (triggerPlayer === 1) ? (np1 > np2) : (np2 > np1);
+            break;
+          }
+          // diff < 2 → still contested, keep scanning
+        } else {
+          // ── Normal play: first player to reach 11 wins ────────────────────
+          if (triggerPlayer === 1 && np1 >= 11) { outcomeSuccess = true;  break; }
+          if (triggerPlayer === 2 && np2 >= 11) { outcomeSuccess = true;  break; }
+          // Opponent wins without deuce
+          if (triggerPlayer === 1 && np2 >= 11) { outcomeSuccess = false; break; }
+          if (triggerPlayer === 2 && np1 >= 11) { outcomeSuccess = false; break; }
+        }
+      }
+
+      if (outcomeSuccess) anyTriggerSuccess = true;
+      else               anyTriggerFail    = true;
+
+      const hlColor = outcomeSuccess ? GREEN_HL : RED_HL;
+
+      // Apply fill to columns F & G from trigger row through end of triggered range
+      for (let k = di; k <= hlEnd; k++) {
+        const excelRowNum = k + 2; // +1 header row, +1 for 1-based
+        [COL_F, COL_G].forEach(col => {
+          const cell = ws.getCell(excelRowNum, col);
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: hlColor } };
+        });
+      }
+
+      di = hlEnd + 1; // jump past the highlighted range
+    } else {
+      di++;
+    }
+  }
+
+  // Overall status: FAIL if any triggered set failed; SUCCESS if all succeeded;
+  // 'N/A' if no 10-6 trigger was found in any set
+  const statusResult = anyTriggerFail
+    ? 'Fail'
+    : (anyTriggerSuccess ? 'Success' : 'N/A');
+  const statusColor  = anyTriggerFail
+    ? 'FFF6A6B1'
+    : (anyTriggerSuccess ? 'FFA8F4D0' : 'FFDEDEDE');
+
+  // ── MAX Sets + Status summary cells ───────────────────────────────────────
+  const lastDataRow = data.length + 1;
+  const computedSetHeaderRowIdx    = lastDataRow + 3;
+  const computedSetColHeaderRowIdx = computedSetHeaderRowIdx + 1;
+  const summaryRow = computedSetColHeaderRowIdx + lastPlayPerSet.length + 2;
+
+  const cellD = ws.getCell(`D${summaryRow}`);
+  const cellE = ws.getCell(`E${summaryRow}`);
+  const cellK = ws.getCell(`K${summaryRow}`);
+
+  const maxD = Math.max(...data.map(row => Number(row[headers[3]]) || 0));
+  const maxE = Math.max(...data.map(row => Number(row[headers[4]]) || 0));
+
+  cellD.value = { formula: `MAX(D2:D${lastDataRow})`, result: maxD };
+  cellE.value = { formula: `MAX(E2:E${lastDataRow})`, result: maxE };
+  cellK.value = statusResult;  // plain value — no longer driven by J/K columns
+
+  [cellD, cellE, cellK].forEach(cell => {
+    cell.alignment = centerAlign;
+    cell.border    = border;
+    cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: statusColor } };
+  });
+
   ws.getRow(summaryRow).height = 25;
   
-  console.log(`  📄 Added sheet: "${sheetName}" with ${data.length} rows`);
+  console.log(`  📄 Added sheet: "${sheetName}" with ${data.length} rows and ${lastPlayPerSet.length} set(s) in summary`);
   
   // Collect details for the Summary sheet
   summaryRowsData.push({
@@ -162,6 +347,95 @@ jsonFiles.forEach(file => {
     statusColor: statusColor
   });
 });
+
+// --- Populate Overall Data Worksheet ---
+if (overallDataRows.length > 0 && overallHeaders) {
+  const SET_SUMMARY_COLOR = 'FFFFC000';
+  const odHeaders = ['Match', ...overallHeaders];
+
+  // Column widths: 'Match' col gets 15, '#' col gets 6, rest get 15
+  overallWs.columns = odHeaders.map((h, i) => ({
+    key: String(i),
+    width: i === 0 ? 15 : (i === 1 ? 6 : 15)
+  }));
+
+  // Single header row at the top
+  const odHeaderRow = overallWs.addRow(odHeaders);
+  odHeaderRow.eachCell(cell => {
+    cell.font = { bold: true };
+    cell.alignment = headerAlign;
+    cell.border = border;
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9D9D9' }
+    };
+  });
+  odHeaderRow.height = 40;
+
+  // One block per match
+  overallDataRows.forEach(({ sheetName, headers: matchHeaders, lastPlayPerSet }, matchIdx) => {
+    // Write a match-name label row (dark grey banner)
+    const labelRow = overallWs.addRow([sheetName]);
+    const labelCell = labelRow.getCell(1);
+    labelCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    labelCell.alignment = centerAlign;
+    labelCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF404040' }
+    };
+    labelCell.border = border;
+    // Fill the rest of the label row in dark grey too
+    for (let col = 2; col <= odHeaders.length; col++) {
+      const c = labelRow.getCell(col);
+      c.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF404040' }
+      };
+      c.border = border;
+    }
+    labelRow.height = 22;
+
+    // Write each set's final-play row
+    lastPlayPerSet.forEach(record => {
+      const rowValues = [
+        sheetName,
+        ...matchHeaders.map(h => {
+          // Use this match's own header keys to read values correctly
+          const val = record[h];
+          if (val === undefined || val === null) return '';
+          return (typeof val === 'string' && val.trim() !== '' && !isNaN(val))
+            ? Number(val)
+            : val;
+        })
+      ];
+
+      const dataRow = overallWs.addRow(rowValues);
+      dataRow.eachCell({ includeEmpty: true }, cell => {
+        cell.alignment = centerAlign;
+        cell.border = border;
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: SET_SUMMARY_COLOR }
+        };
+      });
+      dataRow.height = 25;
+    });
+
+    // Blank separator row between match blocks (except after the last one)
+    if (matchIdx < overallDataRows.length - 1) {
+      overallWs.addRow([]).height = 10;
+    }
+  });
+
+  console.log(`  📋 Populated "Overall Data" sheet with ${overallDataRows.reduce((s, m) => s + m.lastPlayPerSet.length, 0)} set-summary rows across ${overallDataRows.length} match(es).`);
+} else {
+  // No data — leave a placeholder message
+  overallWs.addRow(['No match data available']);
+}
 
 // --- Populate Summary Worksheet ---
 summaryWs.columns = [
